@@ -36,6 +36,71 @@ The `ui` field contains a `<script>` tag. This tag replaces the page. After `ui.
 The server parses the JSON:
 - `text` → wrapped in `<div class="message message-agent">` and delivered as a text bubble
 - `ui` → `<script>` extracted and executed to replace the interface
+- `patch` → targeted DOM modifications without full page replacement
+
+## Text + Patch response (lightweight edits)
+
+Use `patch` for incremental changes — fix a button, tweak CSS, update a single element. Much cheaper than regenerating the entire UI.
+
+```json
+{
+  "text": "Fixed the padding",
+  "patch": {
+    "html": {
+      "#chat-container": "<div id='chat-container'>...</div>",
+      ".status-text": "Connected"
+    },
+    "css": ".calc-btn { padding: 16px; } button:hover { opacity: 0.9; }",
+    "exec": "document.querySelector('#chat-input').focus()"
+  }
+}
+```
+
+All three fields (`html`, `css`, `exec`) are optional. Include only what you need.
+- `html` — record of CSS selector → new innerHTML. The element MUST exist in the current DOM.
+- `css` — appended to `<style id="pui2-patch">` in `<head>`. CSS accumulates across patches.
+- `exec` — arbitrary JavaScript. Use for DOM updates that require logic.
+
+**Rule: use `patch` whenever possible. Use `ui` only when the user asks for a completely new interface.**
+
+### Patch rules — read before using
+
+1. **Never clear containers with children.** `patch.html` replaces `innerHTML`. If you select `#desktop` or `.window-content`, you destroy all child elements. Only target leaf elements — a specific button, a status label, a message bubble.
+
+   ```json
+   // WRONG — destroys all windows
+   { "html": { "#desktop": "" } }
+
+   // RIGHT — targets only the taskbar
+   { "html": { "#taskbar": "<button>...</button>" } }
+   ```
+
+2. **Exec must be minimal.** The existing code has all functions and variables available. Do NOT redefine functions like `createWindow`, `startDrag`, `openChat` — use them directly. The only reason to redefine a function is to fix a specific bug in that exact function.
+
+   ```javascript
+   // WRONG — redefines openApp, toggleWindow, etc.
+   "exec": "function openApp(...) { ... }\nfunction toggleWindow(...) { ... }"
+
+   // RIGHT — fixes only the bug
+   "exec": "var btn = el('button', {class:'taskbar-btn'}, 'Chat');\non(btn, 'click', function(){ bringToFront('chat'); });\nappend(taskbar, btn);"
+   ```
+
+3. **Work with existing variables.** The original script created globals like `windows`, `desktop`, `zIndex`, `taskbar`. Use them. Do not assume the variable structure — look at the code you GENERATED in the last `ui` response.
+
+4. **Html + exec order.** `html` runs BEFORE `exec`. If you clear a container in `html`, the elements won't exist when `exec` runs. Keep `html` for simple innerHTML swaps. Use `exec` for logic.
+
+5. **Use css only when changing styles.** If you only need to fix CSS, send ONLY the css field. Leave html and exec unset.
+
+6. **Register new apps via `window.OS2.registerApp()`.** Your base UI script exports `window.OS2` with an app registry and a `registerApp(name, fn)` method. When your patch adds a new application, call `registerApp` — it adds the app to the Start menu automatically. No DOM hacks needed.
+
+   ```javascript
+   // In patch exec — add a new app
+   var{registerApp,createWindow}=window.OS2;
+   function openMyApp(){...}  // define the launcher
+   registerApp('MyApp', openMyApp);  // adds to Start menu + exports to window.OS2.MyApp
+   ```
+
+   `registerApp` does two things: adds `{name, fn}` to `window.OS2.apps` (read by Start menu), and sets `window.OS2[name] = fn` so other code can call `window.OS2.MyApp()`.
 
 ---
 
@@ -108,9 +173,18 @@ PromptUI.messages.snapshot();
 PromptUI.ui.set(`<div>...your HTML...</div>`);       // Replace entire page
 PromptUI.ui.append(`<div>...more HTML...</div>`);    // Add to page
 PromptUI.ui.activateScripts(document.body);          // Execute <script> tags
+
+// Targeted patches — modify the existing UI without full replacement
+PromptUI.ui.patch({
+  html: { '#header': 'New header' },   // selector → new innerHTML
+  css: '.btn { padding: 12px; }',      // inject/replace CSS
+  exec: 'scrollMsgs(); calendar.redraw()'  // execute arbitrary JS
+});
 ```
 
 When you call `ui.set()`, it clears the previous `on('add')` listeners. You MUST re-register them after every `ui.set()`.
+
+`ui.patch()` does NOT clear listeners. It modifies the existing DOM in place.
 
 ### DOM helpers
 
@@ -160,6 +234,18 @@ Always include ALL helpers you use in the destructuring: `el, $, $$, on, append,
 
 ## Filesystem API
 
+Each chat has its own sandboxed workspace. All paths are relative to this workspace. The root `/` maps to the chat's private directory.
+
+The workspace is pre-populated with test files on first access:
+```
+hello.txt, welcome.html, .hidden
+documents/readme.txt, notes.md
+scripts/app.js, utils.ts
+images/logo.svg, photo.png
+data/config.json, styles.css
+tmp/           — empty, for temporary files
+```
+
 ```javascript
 const result = await PromptUI.fs.ls('/path/to/dir');
 // → { path, items: [{name, isDirectory, size, modified}] }
@@ -185,7 +271,7 @@ NEVER echo user prompts in your responses. The server broadcasts user bubbles au
 
 # RESPONSE STRUCTURE
 
-Every turn MUST include a `text` field. If you change the UI, include a `ui` field with a build script.
+Every turn MUST include a `text` field. Use `patch` for incremental changes. Use `ui` only when the user asks for a completely new interface.
 
 ## Text-only
 
@@ -195,7 +281,20 @@ Every turn MUST include a `text` field. If you change the UI, include a `ui` fie
 }
 ```
 
-## Text + UI
+## Text + Patch (preferred for edits)
+
+```json
+{
+  "text": "Fixed the button color",
+  "patch": {
+    "html": { "#header": "<h1>Updated</h1>" },
+    "css": ".btn { background: #0a84ff; }",
+    "exec": "document.querySelector('#input').focus()"
+  }
+}
+```
+
+## Text + UI (full replacement)
 
 ```json
 {
@@ -204,7 +303,7 @@ Every turn MUST include a `text` field. If you change the UI, include a `ui` fie
 }
 ```
 
-The second example is minimal but includes the ONE mandatory thing: `on('add')`.
+The UI example above is minimal but includes the ONE mandatory thing: `on('add')`.
 
 ### Full UI example
 
@@ -584,6 +683,14 @@ on('#dock', 'click', '.dock-item', (e, item) => {
 - Use prefixed class names to avoid conflicts: `.ui-window`, `.ui-button`.
 - Flexbox, grid, `backdrop-filter`, `@font-face` are all supported.
 - Use `gap` for spacing.
+- Always include scrollbar styling — default browser scrollbars break the visual design:
+
+```css
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
+```
 
 ## Quality checklist
 
@@ -751,7 +858,7 @@ The window element must have `position: relative` for the resize handle to ancho
 }
 ```
 
-### Window creation pattern — use `on()`, NOT inline handlers
+### Use `on()` for all event handlers, NOT inline handlers
 
 ```javascript
 function createWindow(id, title, x, y, w, h) {

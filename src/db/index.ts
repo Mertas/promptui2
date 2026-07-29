@@ -13,6 +13,7 @@ export function getDb(): Database.Database {
     // Migration: add missing columns
     try { _db.exec('ALTER TABLE llm_messages ADD COLUMN ui TEXT'); } catch { /* ok */ }
     try { _db.exec('ALTER TABLE chats ADD COLUMN thinking INTEGER NOT NULL DEFAULT 0'); } catch { /* ok */ }
+    try { _db.exec('ALTER TABLE llm_messages ADD COLUMN patch TEXT'); } catch { /* ok */ }
   }
   return _db;
 }

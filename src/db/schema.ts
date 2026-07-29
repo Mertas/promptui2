@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS llm_messages (
   role TEXT NOT NULL CHECK(role IN ('user','agent','system')),
   content TEXT NOT NULL,
   ui TEXT,
+  patch TEXT,
   created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
   FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
@@ -68,6 +69,7 @@ export interface LlmMessage {
   role: 'user' | 'agent' | 'system';
   content: string;
   ui: string | null;
+  patch: string | null;
   created_at: number;
 }
 

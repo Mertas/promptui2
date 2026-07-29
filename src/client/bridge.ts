@@ -17,10 +17,17 @@ interface PromptUIMessages {
   get clientId(): string;
 }
 
+interface PatchData {
+  html?: Record<string, string>;
+  css?: string;
+  exec?: string;
+}
+
 interface PromptUIUi {
   set(html: string): void;
   append(html: string): void;
   activateScripts(container?: Element): void;
+  patch(data: PatchData): void;
 }
 
 interface FileItem {
@@ -258,29 +265,59 @@ const ui: PromptUIUi = {
       old.replaceWith(ns);
     }
   },
+  patch(data) {
+    if (data.html) {
+      for (const [selector, innerHTML] of Object.entries(data.html)) {
+        const el = document.querySelector(selector);
+        if (!el) {
+          console.warn('[bridge] patch: selector not found:', selector);
+          continue;
+        }
+        // Warn if clearing a container with children — likely a mistake
+        if (innerHTML === '' && el.children.length > 0) {
+          console.warn('[bridge] patch: clearing non-empty container', selector, '— this destroys', el.children.length, 'child elements. Did you mean to clear this?');
+        }
+        el.innerHTML = innerHTML;
+      }
+    }
+    if (data.css) {
+      let style = document.getElementById('pui2-patch') as HTMLStyleElement | null;
+      if (!style) {
+        style = document.createElement('style');
+        style.id = 'pui2-patch';
+        document.head.appendChild(style);
+      }
+      style.textContent = (style.textContent || '') + '\n' + data.css;
+    }
+    if (data.exec) {
+      try { new Function(data.exec)(); } catch (e) {
+        console.error('[bridge] patch exec error:', e);
+      }
+    }
+  },
 };
 
 // ─── Filesystem ─────────────────────────────────────────────
 
 const fs: PromptUIFs = {
   ls(path) {
-    return fetch(`/api/fs/ls?path=${encodeURIComponent(path)}`).then((r) => r.json());
+    return fetch(`/api/fs/ls?path=${encodeURIComponent(path)}&chatId=${encodeURIComponent(CHAT_ID)}`).then((r) => r.json());
   },
   read(path) {
-    return fetch(`/api/fs/read?path=${encodeURIComponent(path)}`).then((r) => r.json());
+    return fetch(`/api/fs/read?path=${encodeURIComponent(path)}&chatId=${encodeURIComponent(CHAT_ID)}`).then((r) => r.json());
   },
   write(path, content) {
     return fetch('/api/fs/write', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path, content }),
+      body: JSON.stringify({ path, content, chatId: CHAT_ID }),
     }).then((r) => r.json());
   },
   mkdir(path) {
     return fetch('/api/fs/mkdir', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ path, chatId: CHAT_ID }),
     }).then((r) => r.json());
   },
 };
@@ -357,6 +394,10 @@ window.__runtime_subscribe('/body', (content: string) => {
     const cmd = JSON.parse(content);
     if (cmd.type === 'undo') {
       window.__messagesRemove(cmd.agentId, cmd.userId);
+      return;
+    }
+    if (cmd.type === 'patch' && cmd.data) {
+      PromptUI.ui.patch(cmd.data as PatchData);
       return;
     }
   } catch { /* not JSON */ }

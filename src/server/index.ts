@@ -26,17 +26,20 @@ setReplayHandler((chatId: string, path: string) => {
   const db = getDb();
   if (path === '/body') {
     const rows = db
-      .prepare('SELECT id, role, content, ui, created_at FROM llm_messages WHERE chat_id = ? ORDER BY created_at ASC')
+      .prepare('SELECT id, role, content, ui, patch, created_at FROM llm_messages WHERE chat_id = ? ORDER BY created_at ASC')
       .all(chatId) as LlmMessage[];
 
     return rows
       .map((r) => {
         const html = `<div class="message message-${r.role}">${escapeHtml(r.content)}</div>`;
-        // Append UI script for agent messages that have one
+        const parts = [html];
         if (r.role === 'agent' && r.ui) {
-          return html + '\n' + r.ui;
+          parts.push(r.ui);
         }
-        return html;
+        if (r.role === 'agent' && r.patch) {
+          parts.push(`<script>window.PromptUI.ui.patch(${r.patch.replace(/<\//g, '<\\/')})</script>`);
+        }
+        return parts.join('\n');
       })
       .join('\n');
   }
@@ -343,9 +346,42 @@ app.post('/chat/:id/snapshot', (req, res) => {
 
 // ─── API: Filesystem ─────────────────────────────────────────
 
-function safePath(virtualPath: string): string {
-  const resolved = resolve(FS_ROOT, normalize(virtualPath).replace(/\\/g, '/'));
-  const root = resolve(FS_ROOT);
+const seededChats = new Set<string>();
+
+function seedWorkspace(chatId: string): void {
+  if (seededChats.has(chatId)) return;
+  const root = resolve(FS_ROOT, chatId);
+  if (!existsSync(root)) mkdirSync(root, { recursive: true });
+
+  const dirs = ['documents', 'scripts', 'images', 'data', 'tmp'];
+  for (const d of dirs) mkdirSync(join(root, d), { recursive: true });
+
+  writeFileSync(join(root, 'hello.txt'), 'Hello from OS/2 2999!\nThis is a test file in your workspace.\nFeel free to edit or delete it.\n');
+  writeFileSync(join(root, 'welcome.html'), '<!DOCTYPE html>\n<html>\n<head><title>Welcome</title></head>\n<body>\n  <h1>Welcome to OS/2 2999</h1>\n  <p>This file system is your playground.</p>\n</body>\n</html>\n');
+  writeFileSync(join(root, '.hidden'), 'This file is hidden (starts with a dot).\n');
+
+  writeFileSync(join(root, 'documents', 'readme.txt'), 'OS/2 2999 — Project README\n========================\n\nOverview:\n  This workspace simulates a local file system.\n  Use OS/2 Commander to browse, the Editor to modify files,\n  and Preview to view images and PDFs.\n\nGetting Started:\n  1. Open Commander from the Start menu\n  2. Browse the workspace directories\n  3. Use F4 to edit a file in the Editor\n');
+  writeFileSync(join(root, 'documents', 'notes.md'), '# Meeting Notes\n\n## 2999-01-15 — Project Kickoff\n\n- Team assembled\n- Workspace initialized\n- File system operational\n\n## TODO\n\n- [x] Commander file browser\n- [ ] Code editor\n- [ ] Preview application\n- [ ] Performance benchmarks\n');
+
+  writeFileSync(join(root, 'scripts', 'app.js'), '// OS/2 2999 — Application bootstrap\nconst APP_VERSION = \'1.0.0\';\n\nfunction init() {\n  console.log(\'OS/2 2999 booting...\');\n  registerServices();\n  mountFileSystem();\n  startWindowManager();\n}\n\nfunction registerServices() {\n  // Service registration\n  const services = [\'fs\', \'wm\', \'net\', \'audio\'];\n  for (const s of services) {\n    console.log(`  Registering ${s}...`);\n  }\n}\n\nfunction mountFileSystem() {\n  console.log(\'  Mounting volumes...\');\n}\n\nfunction startWindowManager() {\n  console.log(\'  Window manager ready.\');\n}\n\ninit();\n');
+  writeFileSync(join(root, 'scripts', 'utils.ts'), '// OS/2 2999 — Utility functions\n\nexport function formatBytes(bytes: number): string {\n  if (bytes < 1024) return bytes + \' B\';\n  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + \' KB\';\n  return (bytes / (1024 * 1024)).toFixed(1) + \' MB\';\n}\n\nexport function formatDate(timestamp: number): string {\n  const d = new Date(timestamp);\n  const pad = (n: number) => String(n).padStart(2, \'0\');\n  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;\n}\n\nexport function debounce<T extends (...args: unknown[]) => void>(fn: T, ms: number): T {\n  let timer: ReturnType<typeof setTimeout>;\n  return ((...args: unknown[]) => {\n    clearTimeout(timer);\n    timer = setTimeout(() => fn(...args), ms);\n  }) as T;\n}\n');
+
+  writeFileSync(join(root, 'images', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">\n  <rect width="100" height="100" rx="12" fill="#000080"/>\n  <text x="50" y="62" text-anchor="middle" fill="#ffffff" font-family="sans-serif" font-size="32" font-weight="bold">OS/2</text>\n  <text x="50" y="82" text-anchor="middle" fill="#c0c0c0" font-family="sans-serif" font-size="12">2999</text>\n</svg>\n');
+  writeFileSync(join(root, 'images', 'photo.png'), 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\n');
+  writeFileSync(join(root, 'images', 'readme.txt'), 'Image files in this directory:\n  logo.svg   — OS/2 2999 logo (vector)\n  photo.png  — sample photo (base64 placeholder)\n');
+
+  writeFileSync(join(root, 'data', 'config.json'), JSON.stringify({ app: 'OS/2 2999', version: '1.0.0', theme: 'dark', features: { fs: true, wm: true, net: true }, paths: { home: '/home', documents: '/documents', scripts: '/scripts', images: '/images', data: '/data', tmp: '/tmp' } }, null, 2) + '\n');
+  writeFileSync(join(root, 'data', 'styles.css'), '/* OS/2 2999 — Global Styles */\n:root {\n  --bg: #0a0a14;\n  --surface: rgba(18, 18, 32, 0.92);\n  --accent: #5b6cf0;\n  --text: #e4e6f0;\n}\n\nbody {\n  background: var(--bg);\n  color: var(--text);\n  font-family: system-ui, sans-serif;\n}\n\n.container {\n  max-width: 1200px;\n  margin: 0 auto;\n  padding: 16px;\n}\n');
+
+  writeFileSync(join(root, 'tmp', '.gitkeep'), '');
+
+  seededChats.add(chatId);
+}
+
+function safePath(chatId: string, virtualPath: string): string {
+  const clean = normalize(virtualPath).replace(/\\/g, '/').replace(/^\//, '');
+  const resolved = resolve(FS_ROOT, chatId, clean);
+  const root = resolve(FS_ROOT, chatId);
   if (!resolved.startsWith(root)) {
     throw new Error('Path traversal blocked');
   }
@@ -354,8 +390,10 @@ function safePath(virtualPath: string): string {
 
 app.get('/api/fs/ls', (req, res) => {
   try {
+    const chatId = (req.query.chatId as string) || '_global';
+    seedWorkspace(chatId);
     const vpath = (req.query.path as string) || '/';
-    const realPath = safePath(vpath);
+    const realPath = safePath(chatId, vpath);
     const entries = readdirSync(realPath, { withFileTypes: true });
     const items = entries.map((e) => {
       const fullPath = join(realPath, e.name);
@@ -375,8 +413,10 @@ app.get('/api/fs/ls', (req, res) => {
 
 app.get('/api/fs/read', (req, res) => {
   try {
+    const chatId = (req.query.chatId as string) || '_global';
+    seedWorkspace(chatId);
     const vpath = req.query.path as string;
-    const realPath = safePath(vpath);
+    const realPath = safePath(chatId, vpath);
     const content = readFileSync(realPath, 'utf-8');
     const stat = statSync(realPath);
     res.json({ path: vpath, content, size: stat.size });
@@ -387,9 +427,11 @@ app.get('/api/fs/read', (req, res) => {
 
 app.post('/api/fs/write', (req, res) => {
   try {
+    const chatId = (req.body.chatId as string) || '_global';
+    seedWorkspace(chatId);
     const vpath = req.body.path as string;
     const content = req.body.content as string;
-    const realPath = safePath(vpath);
+    const realPath = safePath(chatId, vpath);
     writeFileSync(realPath, content, 'utf-8');
     res.json({ path: vpath, written: Buffer.byteLength(content, 'utf-8') });
   } catch (err) {
@@ -399,8 +441,10 @@ app.post('/api/fs/write', (req, res) => {
 
 app.post('/api/fs/mkdir', (req, res) => {
   try {
+    const chatId = (req.body.chatId as string) || '_global';
+    seedWorkspace(chatId);
     const vpath = req.body.path as string;
-    const realPath = safePath(vpath);
+    const realPath = safePath(chatId, vpath);
     mkdirSync(realPath, { recursive: true });
     res.json({ path: vpath, created: true });
   } catch (err) {

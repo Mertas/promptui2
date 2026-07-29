@@ -17,6 +17,11 @@ const openai = new OpenAI({
 interface LlmResponse {
   text?: string;
   ui?: string;
+  patch?: {
+    html?: Record<string, string>;
+    css?: string;
+    exec?: string;
+  };
 }
 
 type Broadcaster = (type: string, data: unknown) => void;
@@ -238,14 +243,18 @@ export async function handlePrompt(
 
     const text = parsed.text;
     const ui = parsed.ui || null;
+    const patch = parsed.patch || null;
 
-    db.prepare('INSERT INTO llm_messages (chat_id, role, content, ui) VALUES (?, ?, ?, ?)').run(chatId, 'agent', text, ui);
+    db.prepare('INSERT INTO llm_messages (chat_id, role, content, ui, patch) VALUES (?, ?, ?, ?, ?)').run(
+      chatId, 'agent', text, ui,
+      patch ? JSON.stringify(patch) : null,
+    );
 
     const agentHtml = `<div class="message message-agent">${escapeHtml(text)}</div>`;
-    // Send text bubble first (renders immediately)
     emit('update', agentHtml);
-    // Then send UI script separately (arrives second, executes after bubble is visible)
+
     if (ui) emit('update', ui);
+    if (patch) emit('update', JSON.stringify({ path: '/body', type: 'patch', data: patch }));
 
     emit('done', null);
   } catch (err) {

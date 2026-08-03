@@ -65,6 +65,7 @@ declare global {
     __messagesAdd: (html: string) => void;
     __messagesRemove: (agentId: number | null, userId: number | null) => void;
     __pui2_setCredentials: (clientId: string, clientSecret: string) => void;
+    __puiBooted?: boolean;
     PromptUI: PromptUI;
   }
 }
@@ -84,6 +85,16 @@ const _listeners: {
   stream: [],
 };
 let _thinking = false;
+
+// Loading indicator — shown until first ui.set() replaces the body
+(function showLoader() {
+  if (document.body.querySelector('#pui2-loader')) return;
+  const loader = document.createElement('div');
+  loader.id = 'pui2-loader';
+  loader.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0a0a14;z-index:999999;color:#7a7d90;font-family:system-ui,sans-serif;font-size:14px;';
+  loader.innerHTML = '<div style="text-align:center"><div style="margin-bottom:12px;font-size:28px">◇</div><div>Loading...</div></div>';
+  document.body.appendChild(loader);
+})();
 
 window.__pui2_setCredentials = (clientId: string, clientSecret: string): void => {
   localStorage.setItem(`pui2_clientId_${CHAT_ID}`, clientId);
@@ -242,6 +253,7 @@ const ui: PromptUIUi = {
     // Clear old add listeners — their DOM refs are stale after set()
     _listeners.add.length = 0;
     document.body.innerHTML = html;
+    window.__puiBooted = true;
   },
   append(html) {
     if (!document.body) return;
@@ -402,8 +414,20 @@ window.__runtime_subscribe('/body', (content: string) => {
     }
   } catch { /* not JSON */ }
 
-      if (content.includes('<script>')) {
-        const div = document.createElement('div');
+  if (content.includes('<script>')) {
+    // Skip replay scripts if UI was already bootstrapped inline
+    if (window.__puiBooted) {
+      // Still process text bubbles from the replayed content
+      const div = document.createElement('div');
+      div.innerHTML = content;
+      for (const s of div.querySelectorAll('script')) s.remove();
+      const htmlOnly = div.innerHTML.trim();
+      if (htmlOnly && htmlOnly.includes('<div class="message')) {
+        window.__messagesAdd(htmlOnly);
+      }
+      return;
+    }
+    const div = document.createElement('div');
         div.innerHTML = content;
         const scripts = div.querySelectorAll('script');
         for (const s of scripts) {

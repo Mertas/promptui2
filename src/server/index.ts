@@ -8,7 +8,7 @@ import { handlePrompt, stopGeneration, isProcessing } from './llm.js';
 import { v4 as uuid } from 'uuid';
 import type { LlmMessage, ChatPreview } from '../db/schema.js';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync } from 'fs';
-import { join, resolve, dirname, normalize } from 'path';
+import { join, resolve, dirname, normalize, extname } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -76,7 +76,7 @@ function indexHtml() {
 function appHtml(chatId: string) {
   const db = getDb();
   const rows = db
-    .prepare('SELECT id, role, content, created_at FROM llm_messages WHERE chat_id = ? ORDER BY created_at ASC')
+    .prepare('SELECT id, role, content, ui, patch, created_at FROM llm_messages WHERE chat_id = ? ORDER BY created_at ASC')
     .all(chatId) as LlmMessage[];
 
   const messages = rows.map((r) => ({
@@ -89,6 +89,36 @@ function appHtml(chatId: string) {
   const chat = db.prepare('SELECT thinking FROM chats WHERE id = ?').get(chatId) as { thinking: number } | undefined;
   const thinking = chat?.thinking === 1;
 
+  // Check if this chat has a custom UI (any agent message with ui field)
+  const hasCustomUi = rows.some((r) => r.role === 'agent' && r.ui);
+
+  // Build inline bootstrapper: last ui script + all patches after it
+  let bootScript = '';
+  if (hasCustomUi) {
+    const lastUiIdx = rows.reduce((idx, r, i) => (r.role === 'agent' && r.ui) ? i : idx, -1);
+    const patches = rows.filter((r, i) => r.role === 'agent' && r.patch && i > lastUiIdx);
+    const lastUi = lastUiIdx >= 0 ? rows[lastUiIdx] : null;
+
+    const parts: string[] = [];
+    if (lastUi) {
+      const js = lastUi.ui!.replace(/^<script>/, '').replace(/<\/script>$/, '');
+      parts.push(`(function(){${js}})();`);
+    }
+    for (const r of patches) {
+      try {
+        const p = JSON.parse(r.patch!);
+        parts.push(`window.PromptUI.ui.patch(${JSON.stringify(p).replace(/<\//g, '<\\/')});`);
+      } catch { /* skip broken patch */ }
+    }
+    if (parts.length > 0) {
+      bootScript = `<script>
+      ${parts.join('\n')}
+      document.body.style.visibility = 'visible';
+      window.__puiBooted = true;
+      </script>`;
+    }
+  }
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -96,13 +126,13 @@ function appHtml(chatId: string) {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PromptUI2 — Chat</title>
 </head>
-<body>
+<body${hasCustomUi ? ' style="visibility:hidden"' : ''}>
   <script>window.__CHAT_ID__ = '${chatId}';</script>
   <script>window.__CHAT_THINKING__ = ${thinking};</script>
   <script>window.__INITIAL_MESSAGES__ = ${JSON.stringify(messages).replace(/<\//g, '<\\/')};</script>
   <script src="/api/runtime.js"></script>
   <script src="/api/bridge.js"></script>
-  <script src="/api/default-chat.js"></script>
+  ${bootScript || '<script src="/api/default-chat.js"></script>'}
 </body>
 </html>`;
 }
@@ -449,6 +479,40 @@ app.post('/api/fs/mkdir', (req, res) => {
     res.json({ path: vpath, created: true });
   } catch (err) {
     res.status(400).json({ path: req.body.path, created: false, error: String(err) });
+  }
+});
+
+// ─── API: Raw file serving (binary, for images etc.) ─────────
+
+const MIME_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+  '.pdf': 'application/pdf',
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.json': 'application/json',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+};
+
+app.get('/api/fs/file', (req, res) => {
+  try {
+    const chatId = (req.query.chatId as string) || '_global';
+    seedWorkspace(chatId);
+    const vpath = req.query.path as string;
+    const realPath = safePath(chatId, vpath);
+    const ext = extname(vpath).toLowerCase();
+    const mime = MIME_TYPES[ext] || 'application/octet-stream';
+    res.type(mime).sendFile(realPath);
+  } catch (err) {
+    res.status(404).send(String(err));
   }
 });
 
